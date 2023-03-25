@@ -1,0 +1,697 @@
+---
+title: "Seguimiento tutorial"
+author: "Cristina Lendinez"
+date: "`r Sys.Date()`"
+output: 
+  prettydoc::html_pretty:
+  theme: cayman
+  toc: true
+  number_sections: true
+  toc_float: true
+  fontsize: 13pt
+ 
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, warning=FALSE, message=FALSE}
+#BiocManager::install("tximport")
+#BiocManager::install("tximportData")
+#BiocManager::install("tximeta")
+#BiocManager::install("airway")
+#BiocManager::install("pasilla")
+#BiocManager::install("apeglm")
+library("tximport")
+library("readr")
+library("tximportData")
+library("apeglm")
+dir <- system.file("extdata", package="tximportData")
+samples <- read.table(file.path(dir,"samples.txt"), header=TRUE)
+samples$condition <- factor(rep(c("A","B"),each=3))
+rownames(samples) <- samples$run
+samples[,c("pop","center","run","condition")]
+```
+
+A continuación, especificamos la ruta de los archivos usando las columnas apropiadas de samples.
+
+
+```{r, warning=FALSE, message=FALSE}
+files <- file.path(dir,"salmon", samples$run, "quant.sf.gz")
+names(files) <- samples$run
+tx2gene <- read_csv(file.path(dir, "tx2gene.gencode.v27.csv"))
+```
+
+Importamos los datos de cuantificación necesarios para DESeq2 mediante la función tximport . Para obtener más detalles sobre el uso de tximport.
+
+```{r, warning=FALSE, message=FALSE}
+txi <- tximport(files, type="salmon", tx2gene=tx2gene)
+```
+Finalmente, podemos construir un DESeqDataSet a partir del txiobjeto y la información de muestra en samples.
+
+```{r, warning=FALSE, message=FALSE}
+library("DESeq2")
+ddsTxi <- DESeqDataSetFromTximport(txi,
+                                   colData = samples,
+                                   design = ~ condition)
+```
+
+El ddsTxiobjeto aquí se puede utilizar como ddsen los siguientes pasos de análisis.
+
+## Tximeta para importar con metadatos automáticos
+Otro paquete de Bioconductor, tximeta (Love et al. 2020) , amplía tximport y ofrece la misma funcionalidad, además del beneficio adicional de la adición automática de metadatos de anotación para transcriptomas de uso común (GENCODE, Ensembl, RefSeq para humanos y ratones). 
+
+```{r}
+coldata <- samples
+coldata$files <- files
+coldata$names <- coldata$run
+```
+
+```{r}
+library("tximeta")
+se <- tximeta(coldata)
+ddsTxi <- DESeqDataSet(se, design = ~ condition)
+```
+El ddsTxiobjeto aquí se puede utilizar como ddsen los siguientes pasos de análisis. Si tximeta reconoció el transcriptoma de referencia como uno de los que tienen una suma de verificación hash calculada previamente, el rowRangesdel ddsobjeto se completará previamente. Nuevamente, 
+
+## Entrada de matriz de conteo
+
+
+Para demostrar el uso de DESeqDataSetFromMatrix , leeremos los datos de conteo del paquete pasilla . Leemos en una matriz de conteo, que llamaremos cts, y la tabla de información de la muestra, que llamaremos coldata. Más adelante, describimos cómo extraer estos objetos, por ejemplo,  la salida de FeatureCounts .
+
+```{r}
+library("pasilla")
+pasCts <- system.file("extdata",
+                      "pasilla_gene_counts.tsv",
+                      package="pasilla", mustWork=TRUE)
+pasAnno <- system.file("extdata",
+                       "pasilla_sample_annotation.csv",
+                       package="pasilla", mustWork=TRUE)
+cts <- as.matrix(read.csv(pasCts,sep="\t",row.names="gene_id"))
+coldata <- read.csv(pasAnno, row.names=1)
+coldata <- coldata[,c("condition","type")]
+coldata$condition <- factor(coldata$condition)
+coldata$type <- factor(coldata$type)
+```
+
+Examinamos la matriz de conteo y los datos de la columna para ver si son consistentes en términos de orden de muestra.
+
+```{r}
+head(cts)
+```
+
+```{r}
+coldata
+```
+
+
+Como no están en el orden correcto tal como se dan, necesitamos reorganizar uno u otro para que sean consistentes en términos de orden de muestra (si no lo hacemos, las funciones posteriores producirán un error). Además, debemos eliminar los "fb"nombres de las filas de coldata, para que la denominación sea consistente.
+
+```{r}
+rownames(coldata) <- sub("fb", "", rownames(coldata))
+all(rownames(coldata) %in% colnames(cts))
+```
+
+```{r}
+all(rownames(coldata) == colnames(cts))
+```
+
+```{r}
+cts <- cts[, rownames(coldata)]
+all(rownames(coldata) == colnames(cts))
+```
+
+La matriz de conteo y los datos de la columna generalmente se pueden leer en R desde archivos planos usando funciones básicas de R como read.csv o read.delim . Para archivos htseq-count , consulte la función de entrada dedicada a continuación.
+
+Con la matriz de conteo, ctsy la información de muestra, coldatapodemos construir un DESeqDataSet :
+
+```{r}
+library("DESeq2")
+dds <- DESeqDataSetFromMatrix(countData = cts,
+                              colData = coldata,
+                              design = ~ condition)
+dds
+```
+
+
+```{r}
+featureData <- data.frame(gene=rownames(cts))
+mcols(dds) <- DataFrame(mcols(dds), featureData)
+mcols(dds)
+```
+
+##entrada de conteo htseq
+
+Ponemos la ruta del directorio
+
+```{r}
+directory <- "/path/to/your/files/"
+```
+
+
+```{r}
+directory <- system.file("extdata", package="pasilla",
+                         mustWork=TRUE)
+```
+
+Especificamos los archivos que va a ler list.files , y seleccionamos aquellos archivos que contienen la cadena "treated"usando grep . La subfunción se usa para cortar el nombre del archivo de muestra para obtener el estado de la condición, o alternativamente puede leer en una tabla fenotípica usando read.table .
+
+```{r}
+sampleFiles <- grep("treated",list.files(directory),value=TRUE)
+sampleCondition <- sub("(.*treated).*","\\1",sampleFiles)
+sampleTable <- data.frame(sampleName = sampleFiles,
+                          fileName = sampleFiles,
+                          condition = sampleCondition)
+sampleTable$condition <- factor(sampleTable$condition)
+```
+
+Luego construimos el DESeqDataSet usando la siguiente función:
+
+```{r}
+library("DESeq2")
+ddsHTSeq <- DESeqDataSetFromHTSeqCount(sampleTable = sampleTable,
+                                       directory = directory,
+                                       design= ~ condition)
+ddsHTSeq
+```
+
+## Entrada de experimento resumida
+Si uno ya ha creado u obtenido un SummarizedExperiment , se puede ingresar fácilmente en DESeq2 de la siguiente manera. Primero cargamos el paquete que contiene el airwayconjunto de datos.
+
+```{r}
+library("airway")
+data("airway")
+se <- airway
+```
+
+La siguiente función constructora muestra la generación de un DESeqDataSet a partir de un RangedSummarizedExperiment.
+
+```{r}
+library("DESeq2")
+ddsSE <- DESeqDataSet(se, design = ~ cell + dex)
+ddsSE
+```
+
+## Prefiltrado
+Si bien no es necesario filtrar previamente los genes con un bajo conteo antes de ejecutar las funciones DESeq2, hay dos razones que hacen que el filtrado previo sea útil: al eliminar las filas en las que hay muy pocas lecturas, reducimos el tamaño de la memoria del objeto de datos dds, y aumentamos la velocidad de las funciones de transformación y prueba dentro de DESeq2. También puede mejorar las visualizaciones, ya que las características sin información para la expresión diferencial no se trazan.
+
+Aquí realizamos un filtrado previo mínimo para mantener solo las filas que tienen al menos 10 lecturas en total. 
+
+```{r}
+keep <- rowSums(counts(dds)) >= 10
+dds <- dds[keep,]
+
+```
+
+## Prefiltrado
+
+Aquí realizamos un filtrado previo mínimo para mantener solo las filas que tienen al menos 10 lecturas en total. Tenemos en cuenta que se aplica automáticamente un filtrado más estricto para aumentar la potencia a través de un filtrado independiente sobre la media de recuentos normalizados dentro de la función de resultados .
+
+```{r}
+keep <- rowSums(counts(dds)) >= 10
+dds <- dds[keep,]
+```
+
+## Nota sobre los niveles de los factores
+
+De forma predeterminada, R elegirá un nivel de referencia para los factores según el orden alfabético. Entonces, si nunca le dice a las funciones DESeq2 con qué nivel desea comparar (por ejemplo, qué nivel representa el grupo de control), las comparaciones se basarán en el orden alfabético de los niveles. Hay dos soluciones: puede decirle explícitamente a los resultados qué comparación hacer usando el contrastargumento (esto se mostrará más adelante), o puede establecer explícitamente los niveles de los factores. Para ver el cambio de los niveles de referencia reflejados en los nombres de los resultados, debe ejecutar DESeqo nbinomWaldTest/ nbinomLRTdespués de la operación de renivelación. La configuración de los niveles de factor se puede hacer de dos maneras, ya sea usando factor:
+
+```{r}
+dds$condition <- factor(dds$condition, levels = c("untreated","treated"))
+```
+
+
+…o usando relevel , simplemente especificando el nivel de referencia:
+
+```{r}
+dds$condition <- relevel(dds$condition, ref = "untreated")
+```
+
+Si necesita crear un subconjunto de las columnas de un DESeqDataSet , es decir, al eliminar ciertas muestras del análisis, es posible que se eliminen todas las muestras para uno o más niveles de una variable en la fórmula de diseño. En este caso, la función droplevels se puede usar para eliminar aquellos niveles que no tienen muestras en el DESeqDataSet actual :
+
+```{r}
+dds$condition <- droplevels(dds$condition)
+```
+
+Contraer réplicas técnicas
+DESeq2 proporciona una función de colapso de réplicas que puede ayudar a combinar los recuentos de las réplicas técnicas en columnas individuales de la matriz de recuento. El término réplica técnica implica varias ejecuciones de secuenciación de la misma biblioteca. No debe colapsar las réplicas biológicas con esta función. Consulte la página del manual para ver un ejemplo del uso de CollapseReplicates .
+
+About the pasilla dataset
+Continuamos con los datos de pasilla construidos a partir del método de matriz de conteo anterior. Este conjunto de datos proviene de un experimento en cultivos de células de Drosophila melanogaster e investigó el efecto de la eliminación de ARNi del factor de empalme pasilla (Brooks et al. 2011) . La transcripción detallada de la producción de los datos de pasilla se proporciona en la viñeta del paquete de datos de pasilla .
+
+
+## Análisis de expresiones diferenciales
+Los pasos estándar del análisis de expresiones diferenciales están envueltos en una sola función, DESeq . Los pasos de estimación realizados por esta función se describen a continuación , en la página del manual ?DESeqy en la sección Métodos de la publicación DESeq2 (Love, Huber y Anders 2014) .
+
+Las tablas de resultados se generan utilizando la función results , que extrae una tabla de resultados con cambios de log2, valores de p y valores de p ajustados . Sin argumentos adicionales a los resultados , el cambio de pliegue log2 y el valor p de la prueba de Wald serán para la última variable en la fórmula de diseño, y si esto es un factor, la comparación será el último nivel de esta variable sobre el nivel de referencia (ver nota anterior sobre los niveles de los factores ). Sin embargo, el orden de las variables del diseño no importa siempre que el usuario especifique la comparación para construir una tabla de resultados, usando el nameocontrastargumentos de resultados .
+
+Los detalles sobre la comparación se imprimen en la consola, directamente encima de la tabla de resultados. El texto, condition treated vs untreatedle dice que las estimaciones son del cambio de pliegue logarítmico log2 (tratado/no tratado).
+
+```{r}
+dds <- DESeq(dds)
+res <- results(dds)
+res
+```
+Tenga en cuenta que podríamos haber especificado el coeficiente o contraste para el que queremos construir una tabla de resultados, usando cualquiera de los siguientes comandos equivalentes:
+
+```{r}
+res <- results(dds, name="condition_treated_vs_untreated")
+res <- results(dds, contrast=c("condition","treated","untreated"))
+```
+
+Una excepción a la equivalencia de estos dos comandos es que, al usar, contrastse establecerá adicionalmente en 0 el LFC estimado en una comparación de dos grupos, donde todos los conteos en los dos grupos son iguales a 0 (mientras que otros grupos tienen conteos positivos) . Como esta puede ser una característica deseada para tener el LFC en estos casos establecido en 0, se puede usar contrastpara construir estas tablas de resultados. Puede encontrar más información sobre cómo extraer coeficientes específicos de un objeto DESeqDataSet?results ajustado en la página de ayuda . El uso del contrastargumento también se analiza más adelante .
+
+
+Registro de reducción de cambio de pliegue para visualización y clasificación
+La reducción del tamaño del efecto (estimaciones LFC) es útil para la visualización y clasificación de genes. Para encoger el LFC, pasamos el ddsobjeto a la función lfcShrink. A continuación especificamos el uso del método apeglm para la reducción del tamaño del efecto (Zhu, Ibrahim y Love 2018) , que mejora el estimador anterior.
+
+Proporcionamos el ddsobjeto y el nombre o número del coeficiente que queremos reducir, donde el número se refiere al orden del coeficiente tal como aparece en resultsNames(dds).
+
+```{r}
+resultsNames(dds)
+```
+
+```{r}
+resLFC <- lfcShrink(dds, coef="condition_treated_vs_untreated", type="apeglm")
+resLFC
+```
+La estimación de la contracción se analiza con más detalle en una sección posterior .
+
+## Pensamientos de aceleración y paralelización
+Los pasos anteriores deberían tomar menos de 30 segundos para la mayoría de los análisis. Para experimentos con diseños complejos y muchas muestras (por ejemplo, docenas de coeficientes, ~ 100 de muestras), es posible que desee tener un cálculo más rápido que el proporcionado por la ejecución predeterminada de DESeq. Tenemos dos recomendaciones:
+
+Al usar el argumento fitType="glmGamPoi", se puede aprovechar el motor NB GLM más rápido escrito por Constantin Ahlmann-Eltze. Tenga en cuenta que la interfaz de glmGamPoi en DESeq2 requiere el uso test="LRT"y la especificación de un reduceddiseño.
+
+Uno puede aprovechar la computación en paralelo. Paralelizar DESeq, resultsy lfcShrinkse puede lograr fácilmente cargando el paquete BiocParallel y luego configurando los siguientes argumentos: parallel=TRUEy BPPARAM=MulticoreParam(4), por ejemplo, dividiendo el trabajo en 4 núcleos. Sin embargo, algunos consejos sobre la paralelización: primero, se recomienda filtrar genes donde todas las muestras tengan recuentos bajos, para evitar enviar datos innecesariamente a procesos secundarios, cuando esos genes tienen poca potencia y se filtrarán de forma independiente de todos modos; en segundo lugar, a menudo hay rendimientos decrecientes por agregar más núcleos debido a la sobrecarga de enviar datos a los procesos secundarios, por lo tanto, recomiendo comenzar primero con una pequeña cantidad de núcleos adicionales. Tenga en cuenta que la obtención resultsde los coeficientes o contrastes enumerados enresultsNames(dds)es rápido y no necesitará paralelización. Como alternativa a BPPARAM, se pueden generar registernúcleos al comienzo de un análisis y luego simplemente especificar parallel=TRUElas funciones cuando se las llama.
+
+```{r}
+library("BiocParallel")
+register(MulticoreParam(4))
+```
+
+## valores de p y valores de p ajustados
+Podemos ordenar nuestra tabla de resultados por el valor p más pequeño :
+
+```{r}
+resOrdered <- res[order(res$pvalue),]
+```
+
+
+Podemos resumir algunas cuentas básicas utilizando la función de resumen .
+
+```{r}
+summary(res)
+```
+
+¿Cuántos valores p ajustados fueron inferiores a 0,1?
+
+```{r}
+sum(res$padj < 0.1, na.rm=TRUE)
+```
+
+La función de resultados contiene una serie de argumentos para personalizar la tabla de resultados que se genera. Puede leer acerca de estos argumentos al buscar ?results. Tenga en cuenta que la función de resultados realiza automáticamente un filtrado independiente basado en la media de recuentos normalizados para cada gen, optimizando la cantidad de genes que tendrán un valor de p ajustado por debajo de un límite de FDR dado, alpha. El filtrado independiente se analiza más adelante . De forma predeterminada, el argumento alphase establece en0.1
+. Si el corte del valor p ajustado será un valor diferente a 0.1
+, alpha debe establecerse en ese valor:
+
+```{r}
+res05 <- results(dds, alpha=0.05)
+summary(res05)
+```
+
+```{r}
+sum(res05$padj < 0.05, na.rm=TRUE)
+```
+
+Ponderación de hipótesis independientes
+Una generalización de la idea del filtrado del valor p es ponderar las hipótesis para optimizar la potencia. Está disponible un paquete de bioconductores, IHW , que implementa el método de ponderación de hipótesis independientes (Ignatiadis et al. 2016) . Aquí mostramos el uso de IHW para el ajuste del valor p de los resultados de DESeq2. Para obtener más detalles, consulte la viñeta del paquete IHW . El objeto de resultado de IHW se almacena en los metadatos.
+
+```{r}
+# (unevaluated code chunk)
+#BiocManager::install("IHW")
+library("IHW")
+resIHW <- results(dds, filterFun=ihw)
+summary(resIHW)
+sum(resIHW$padj < 0.1, na.rm=TRUE)
+metadata(resIHW)$ihwResult
+```
+
+Para usuarios avanzados, tenga en cuenta que todos los valores calculados por el paquete DESeq2 se almacenan en el objeto DESeqDataSet o el objeto DESeqResults , y el acceso a estos valores se analiza a continuación .
+
+## Exploración y exportación de resultados
+MA-parcela
+En DESeq2, la función plotMA muestra los cambios de veces log2 atribuibles a una variable determinada sobre la media de recuentos normalizados para todas las muestras en DESeqDataSet . Los puntos se colorearán de rojo si el valor de p ajustado es inferior a 0,1. Los puntos que caen por la ventana se trazan como triángulos abiertos que apuntan hacia arriba o hacia abajo.
+
+```{r}
+plotMA(res, ylim=c(-2,2))
+```
+
+Es más útil visualizar el MA-plot para los cambios de pliegue de log2 reducidos, que eliminan el ruido asociado con los cambios de pliegue de log2 de genes de recuento bajo sin requerir umbrales de filtrado arbitrarios.
+
+```{r}
+plotMA(resLFC, ylim=c(-2,2))
+```
+
+Después de llamar a plotMA , se puede usar la función de identificación para detectar de forma interactiva el número de fila de genes individuales haciendo clic en la gráfica. Luego se pueden recuperar los identificadores de genes guardando los índices resultantes:
+
+```{r}
+#idx <- identify(res$baseMean, res$log2FoldChange)
+#rownames(res)[idx]
+```
+## Estimadores de contracción alternativos
+
+Los cambios moderados de pliegues logarítmicos propuestos por Love, Huber y Anders (2014) utilizan una distribución previa normal, centrada en cero y con una escala que se ajusta a los datos. Los cambios de pliegue de registro reducidos son útiles para clasificar y visualizar, sin la necesidad de filtros arbitrarios en genes de recuento bajo. El anterior normal a veces puede producir una contracción demasiado fuerte para ciertos conjuntos de datos. En DESeq2 versión 1.18, incluimos dos estimadores de contracción adaptativos adicionales, disponibles a través del typeargumento de lfcShrink. Para más detalles, consulte?lfcShrink
+
+### Las opciones para typeson:
+
+apeglmes el estimador adaptativo de contracción previa t del paquete apeglm (Zhu, Ibrahim y Love 2018) . A partir de la versión 1.28.0, es el estimador predeterminado.
+ashres el estimador de contracción adaptativo del paquete ashr (Stephens 2016) . Aquí DESeq2 usa la opción ashr para ajustar una mezcla de distribuciones Normales para formar la previa, con method="shrinkage".
+normales el estimador de contracción DESeq2 original, una distribución Normal adaptativa como antes.
+Si el estimador de contracción apeglmse utiliza en investigaciones publicadas, cite:
+En el código de contracción LFC anterior, especificamos coef="condition_treated_vs_untreated". También podemos especificar el coeficiente por el orden en que aparece resultsNames(dds), en este caso coef=2. Para obtener más detalles que explican en qué se diferencian los estimadores de contracción y qué tipos de diseños, contrastes y resultados proporciona cada uno, consulte la sección ampliada sobre estimadores de contracción .
+
+```{r}
+resultsNames(dds)
+```
+
+```{r}
+# because we are interested in treated vs untreated, we set 'coef=2'
+resNorm <- lfcShrink(dds, coef=2, type="normal")
+resAsh <- lfcShrink(dds, coef=2, type="ashr")
+```
+
+```{r}
+par(mfrow=c(1,3), mar=c(4,4,2,1))
+xlim <- c(1,1e5); ylim <- c(-3,3)
+plotMA(resLFC, xlim=xlim, ylim=ylim, main="apeglm")
+plotMA(resNorm, xlim=xlim, ylim=ylim, main="normal")
+plotMA(resAsh, xlim=xlim, ylim=ylim, main="ashr")
+```
+
+Nota: Hemos acelerado el apeglmmétodo, por lo que tarda aproximadamente la misma cantidad de tiempo que normal, por ejemplo, ~5 segundos para el pasillaconjunto de datos de ~10 000 genes y 7 muestras. Si se necesita una estimación de contracción rápida de LFC, pero no se necesita la desviación estándar posterior , la configuración apeMethod="nbinomC"producirá una aceleración de ~10x, pero la lfcSEcolumna se devolverá con NA. Una variante de este método rápido apeMethod="nbinomC*"incluye inicios aleatorios.
+
+Nota: si hay una variación no deseada presente en los datos (p. ej., efectos de lote), siempre se recomienda corregir esto, lo que se puede acomodar en DESeq2 al incluir en el diseño cualquier variable de lote conocida o al usar funciones/paquetes como svaseqen sva (Leek 2014) o las RUVfunciones en RUVSeq (Risso et al. 2014) para estimar variables que capturan la variación no deseada. Además, los desarrolladores de Ashr tienen un método específico para contabilizar la variación no deseada en combinación con Ashr (Gerard y Stephens 2017) .
+
+
+## Conteos de parcelas
+
+También puede ser útil examinar los recuentos de lecturas de un solo gen en los grupos. Una función simple para realizar este gráfico es plotCounts , que normaliza los recuentos según los factores de tamaño estimados (o factores de normalización si se usaron) y agrega un pseudorrecuento de 1/2 para permitir el trazado a escala logarítmica. Los recuentos se agrupan por las variables en intgroup, donde se puede especificar más de una variable. Aquí especificamos el gen que tenía el valor p más pequeño de la tabla de resultados creada anteriormente. Puede seleccionar el gen para trazar por nombre de fila o por índice numérico.
+
+```{r}
+plotCounts(dds, gene=which.min(res$padj), intgroup="condition")
+```
+
+Para el trazado personalizado, un argumento returnDataespecifica que la función solo debe devolver un data.frame para trazar con ggplot .
+
+```{r}
+d <- plotCounts(dds, gene=which.min(res$padj), intgroup="condition", 
+                returnData=TRUE)
+library("ggplot2")
+ggplot(d, aes(x=condition, y=count)) + 
+  geom_point(position=position_jitter(w=0.1,h=0)) + 
+  scale_y_log10(breaks=c(25,100,400))
+```
+
+## Más información sobre las columnas de resultados
+
+La información sobre qué variables y pruebas se usaron se puede encontrar llamando a la función mcols en el objeto de resultados.
+
+```{r}
+mcols(res)$description
+```
+
+Para un gen en particular, un cambio log2 veces de -1 significa condition treated vs untreatedque el tratamiento induce un cambio multiplicativo en el nivel de expresión génica observado de2− 1= 0,5
+en comparación con la condición no tratada. Si la variable de interés tiene un valor continuo, entonces el cambio de registro log2 informado es por unidad de cambio de esa variable.
+
+
+Nota sobre los valores p establecidos en NA : algunos valores en la tabla de resultados se pueden establecer en NApor una de las siguientes razones:
+
+Si dentro de una fila, todas las muestras tienen recuentos cero, la baseMeancolumna será cero y las estimaciones de cambio de pliegue log2, el valor p y el valor p ajustado se establecerán en NA.
+Si una fila contiene una muestra con un valor atípico de recuento extremo, el valor p y el valor p ajustado se establecerán en NA. Estos recuentos de valores atípicos se detectan mediante la distancia de Cook. La personalización de este filtrado de valores atípicos y la descripción de la funcionalidad para el reemplazo de recuentos de valores atípicos y el reacondicionamiento se describen a continuación .
+Si una fila se filtra mediante el filtrado independiente automático, por tener un recuento medio normalizado bajo, entonces solo el valor de p ajustado se establecerá en NA. La descripción y la personalización del filtrado independiente se describen a continuación.
+Visualización enriquecida e informes de resultados
+ReportingTools Se puede generar un informe HTML de los resultados con gráficos y columnas clasificables/filtrables utilizando el paquete ReportingTools en un DESeqDataSet que ha sido procesado por la función DESeq . Para ver un ejemplo de código, consulte la viñeta de expresión diferencial de RNA-seq en la página ReportingTools o la página del manual del método de publicación para la clase DESeqDataSet .
+
+regionReport También se puede generar un resumen HTML y PDF de los resultados con gráficos usando el paquete regionReport . La función DESeq2Report debe ejecutarse en un DESeqDataSet que haya sido procesado por la función DESeq . Para obtener más detalles, consulte la página del manual de DESeq2Report y una viñeta de ejemplo en el paquete regionReport .
+
+Glimma La visualización interactiva de la salida de DESeq2, incluidas las gráficas MA (también denominadas gráficas MD), se puede generar utilizando el paquete Glimma . Consulte la página del manual para glMDPlot.DESeqResults .
+
+pcaExplorer La visualización interactiva de la salida de DESeq2, incluidos gráficos PCA, diagramas de caja de recuentos y otros resúmenes útiles, se puede generar utilizando el paquete pcaExplorer . Consulte la sección Inicio de la aplicación de la viñeta del paquete.
+
+iSEE Proporciona funciones para crear una interfaz gráfica de usuario interactiva basada en Shiny para explorar datos almacenados en objetos SummarizedExperiment, incluidos los metadatos a nivel de fila y columna. Se presta especial atención a los datos de una sola celda en un objeto SingleCellExperiment con visualización de los resultados de reducción de dimensionalidad. iSEE está en Bioconductor. Un ejemplo de función contenedora para convertir un DESeqDataSet en un objeto SingleCellExperiment para usar con iSEE se puede encontrar en la siguiente esencia, escrita por Federico Marini:
+
+https://gist.github.com/federicomarini/4a543eebc7e7091d9169111f76d59de1
+DEvis DEvis es una potente solución integrada para el análisis de datos de expresión diferencial. Este paquete incluye una variedad de herramientas para manipular y agregar datos, así como una amplia gama de visualizaciones personalizables y funciones de gestión de proyectos que simplifican el análisis de RNA-Seq y brindan una variedad de formas de explorar y analizar datos. DEvis se puede encontrar en CRAN y GitHub .
+
+## Exportación de resultados a archivos CSV
+
+Se puede exportar un archivo de texto sin formato de los resultados mediante las funciones básicas de R write.csv o write.delim . Sugerimos utilizar un nombre de archivo descriptivo que indique la variable y los niveles que se probaron.
+
+```{r}
+write.csv(as.data.frame(resOrdered), 
+          file="condition_treated_results.csv")
+```
+
+Exportar solo los resultados que pasan un umbral de valor p ajustado se puede lograr con la función de subconjunto , seguida de la función write.csv .
+
+```{r}
+resSig <- subset(resOrdered, padj < 0.1)
+resSig
+```
+## Diseños multifactoriales
+Los experimentos con más de un factor que influye en los recuentos se pueden analizar mediante una fórmula de diseño que incluya las variables adicionales. De hecho, DESeq2 puede analizar cualquier diseño experimental posible que pueda expresarse con términos de efectos fijos (factores múltiples, diseños con interacciones, diseños con variables continuas, splines, etc. son todos posibles).
+
+Al agregar variables al diseño, se puede controlar la variación adicional en los conteos. Por ejemplo, si las muestras de condición se equilibran en lotes experimentales, al incluir el batchfactor en el diseño, se puede aumentar la sensibilidad para encontrar diferencias debido a condition. Existen múltiples formas de analizar experimentos cuando las variables adicionales son de interés y no solo los factores de control (consulte la sección sobre interacciones ).
+
+Experimentos con muchas muestras : en experimentos con muchas muestras (p. ej., 50, 100, etc.) es muy probable que haya una variación técnica que afecte a los recuentos observados. Si no se modela esta variación técnica adicional, se obtendrán resultados falsos. Existen muchos métodos que se pueden usar para modelar la variación técnica, que se pueden incluir fácilmente en el diseño de DESeq2 para controlar la variación técnica que estima los efectos de interés. Consulte el flujo de trabajo de RNA-seq para ver ejemplos del uso de RUV o SVA en combinación con DESeq2. Para obtener más detalles sobre por qué es importante controlar la variación técnica en experimentos de muestras grandes, consulte el siguiente hilo .
+
+Los datos del paquete pasilla tienen una condición de interés (la columna condition), así como información sobre el tipo de secuenciación que se realizó (la columna type), como podemos ver a continuación:
+
+```{r}
+colData(dds)
+```
+
+Creamos una copia de DESeqDataSet para que podamos volver a ejecutar el análisis utilizando un diseño multifactorial.
+
+```{r}
+ddsMF <- dds
+```
+
+Cambiamos los niveles de typepara que solo contenga letras (los números, el guión bajo y el punto también se permiten en los niveles de factor de diseño). Tenga cuidado al cambiar los nombres de los niveles para usar el mismo orden que los niveles actuales.
+
+```{r}
+levels(ddsMF$type)
+```
+
+```{r}
+levels(ddsMF$type) <- sub("-.*", "", levels(ddsMF$type))
+levels(ddsMF$type)
+```
+
+Podemos dar cuenta de los diferentes tipos de secuenciación y obtener una imagen más clara de las diferencias atribuibles al tratamiento. Como conditiones la variable de interés, la ponemos al final de la fórmula. Por lo tanto, la función de resultados extraerá los conditionresultados de forma predeterminada a menos contrastque namese especifiquen los argumentos.
+
+Luego podemos volver a ejecutar DESeq :
+
+```{r}
+design(ddsMF) <- formula(~ type + condition)
+ddsMF <- DESeq(ddsMF)
+```
+
+Nuevamente, accedemos a los resultados usando la función de resultados .
+
+```{r}
+resMF <- results(ddsMF)
+head(resMF)
+
+```
+También es posible recuperar los cambios de pliegue log2, los valores de p y los valores de p ajustados de variables distintas de la última en el diseño. Si bien en este caso, typeno es biológicamente interesante ya que indica diferencias en el protocolo de secuenciación, para otros diseños hipotéticos, como ~genotype + condition + genotype:condition, en realidad podemos estar interesados ​​en la diferencia en la expresión de referencia en el genotipo, que no es la última variable en el diseño.
+
+En cualquier caso, el contrastargumento de la función resulta toma un vector de caracteres de longitud tres: el nombre de la variable, el nombre del nivel del factor para el numerador de la relación log2 y el nombre del nivel del factor para el denominador. El contrastargumento también puede tomar otras formas, como se describe en la página de ayuda para resultados y más abajo.
+
+```{r}
+resMFType <- results(ddsMF,
+                     contrast=c("type", "single", "paired"))
+head(resMFType)
+```
+Si la variable es continua o un término de interacción (consulte la sección sobre interacciones ), los resultados se pueden extraer utilizando el nameargumento de resultados , donde el nombre es uno de los elementos devueltos por resultsNames(dds).
+
+## Transformaciones y visualización de datos
+### Contar transformaciones de datos
+Para probar la expresión diferencial, operamos con recuentos sin procesar y usamos distribuciones discretas como se describe en la sección anterior sobre expresión diferencial. Sin embargo, para otros análisis posteriores, por ejemplo, para visualización o agrupación, podría ser útil trabajar con versiones transformadas de los datos de conteo.
+
+Quizás la elección más obvia de transformación es el logaritmo. Dado que los valores de conteo para un gen pueden ser cero en algunas condiciones (y distintos de cero en otras), algunos abogan por el uso de pseudoconteos , es decir, transformaciones de la forma:
+
+$$y=registro2( norte +norte0)$$
+
+donde n representa los valores de conteo ynorte0
+es una constante positiva.
+
+En esta sección, discutimos dos enfoques alternativos que ofrecen más justificación teórica y una forma racional de elegir parámetros equivalentes anorte0
+arriba. Uno hace uso del concepto de transformaciones estabilizadoras de varianza (VST) (Tibshirani 1988; Huber et al. 2003; Anders y Huber 2010) , y el otro es el logaritmo regularizado o rlog , que incorpora un a priori sobre las diferencias muestrales (Love, Huber y Anders 2014) . Ambas transformaciones producen datos transformados en la escala log2 que se han normalizado con respecto al tamaño de la biblioteca u otros factores de normalización.
+
+El objetivo de estas dos transformaciones, VST y rlog , es eliminar la dependencia de la varianza de la media, particularmente la alta varianza del logaritmo de los datos de conteo cuando la media es baja. Tanto VST como rlog utilizan la tendencia de la varianza sobre la media de todo el experimento para transformar los datos y eliminar la tendencia de todo el experimento. Tenga en cuenta que no requerimos ni deseamos que todos los genes tengan exactamente la misma variación después de la transformación. De hecho, en la figura a continuación, verá que después de las transformaciones, los genes con la misma media no tienen exactamente las mismas desviaciones estándar, pero que la tendencia de todo el experimento se ha aplanado. Son esos genes con varianza de fila por encima de la tendencia los que nos permitirán agrupar las muestras en grupos interesantes.
+
+Nota sobre el tiempo de ejecución: si tiene muchas muestras (por ejemplo, 100), la función rlog puede tardar demasiado, por lo que la función vst será una opción más rápida. El rlog y el VST tienen propiedades similares, pero el rlog requiere ajustar un término de contracción para cada muestra y cada gen, lo que lleva tiempo. Consulte el documento DESeq2 para obtener más información sobre las diferencias (Love, Huber y Anders 2014) .
+
+## Estimación de dispersión ciega
+Las dos funciones, vst y rlog tienen un argumento blind, para determinar si la transformación debe ser ciega a la información de la muestra especificada por la fórmula de diseño. Cuando blindes igual TRUE(el valor predeterminado), las funciones volverán a estimar las dispersiones usando solo una intersección. Esta configuración debe usarse para comparar muestras de una manera totalmente imparcial por la información sobre los grupos experimentales, por ejemplo, para realizar el control de calidad de la muestra, como se demuestra a continuación.
+
+Sin embargo, la estimación de dispersión ciega no es la opción adecuada si se espera que muchos o la mayoría de los genes (filas) tengan grandes diferencias en los recuentos que se explican por el diseño experimental y se desea transformar los datos para el análisis posterior. En este caso, el uso de la estimación de dispersión ciega conducirá a grandes estimaciones de dispersión, ya que atribuye las diferencias debidas al diseño experimental como ruido no deseado y dará como resultado una reducción excesiva de los valores transformados entre sí. Al establecer blindaFALSE, las dispersiones ya estimadas se utilizarán para realizar transformaciones, o en caso de no estar presentes, se estimarán utilizando la fórmula de diseño actual. Tenga en cuenta que solo las estimaciones de dispersión ajustadas de la línea de tendencia de dispersión media se utilizan en la transformación (la dependencia global de la dispersión de la media para todo el experimento). Por lo tanto, establecer blinden FALSEsigue siendo en su mayor parte no usar la información sobre qué muestras estaban en qué grupo experimental al aplicar la transformación.
+
+## Extracción de valores transformados
+Estas funciones de transformación devuelven un objeto de clase DESeqTransform que es una subclase de RangedSummarizedExperiment . Para ~20 muestras, ejecutándose en un rlog recién creado DESeqDataSet, puede tardar 30 segundos, mientras que vst tarda menos de 1 segundo. Los tiempos de ejecución son más cortos cuando se usa y si la función DESeq ya se ha ejecutado, porque entonces no es necesario volver a estimar los valores de dispersión. La función de ensayo se utiliza para extraer la matriz de valores normalizados.blind=FALSE
+
+```{r}
+vsd <- vst(dds, blind=FALSE)
+rld <- rlog(dds, blind=FALSE)
+head(assay(vsd), 3)
+```
+
+## Transformación estabilizadora de varianza
+Arriba, usamos un ajuste paramétrico para la dispersión. En este caso, la función vst utiliza la expresión de forma cerrada para la transformación de estabilización de la varianza . Si se usa un ajuste local (opción fitType="locfit"para estimar Dispersiones ), en su lugar se usa una integración numérica. Los datos transformados deben tener una varianza estabilizada aproximada y también incluyen corrección por factores de tamaño o factores de normalización. Los datos transformados están en la escala log2 para conteos grandes.
+
+## Transformación de registros regularizados
+La función rlog , significa logaritmo regularizado , transformando los datos de conteo originales a la escala log2 ajustando un modelo con un término para cada muestra y una distribución previa en los coeficientes que se estima a partir de los datos. Este es el mismo tipo de reducción (a veces denominada regularización o moderación) de los cambios de registro que utilizan DESeq y nbinomWaldTest . Los datos resultantes contienen elementos definidos como:
+
+$$registro2(qyo j) =βyo 0+βyo j$$
+
+dóndeqyo j
+es un parámetro proporcional a la concentración real esperada de fragmentos para el gen i y la muestra j (consulte la fórmula a continuación ),βyo 0
+es un intercepto que no sufre contracción, yβyo j
+es el efecto específico de la muestra que se reduce a cero en función de la tendencia de la media de dispersión en todo el conjunto de datos. La tendencia normalmente captura dispersiones altas para recuentos bajos y, por lo tanto, estos genes exhiben una mayor contracción del rlog .
+
+Tenga en cuenta que, comoqyo j
+representa la parte del valor mediomyo j
+después del factor de tamañosj
+se ha dividido, está claro que la transformación rlog inherentemente explica las diferencias en la profundidad de secuenciación. Sin priores, esta matriz de diseño conduciría a una solución no única, sin embargo, la adición de un prior en betas sin intercepción permite encontrar una solución única.
+
+## Efectos de las transformaciones en la varianza
+La siguiente figura traza la desviación estándar de los datos transformados, entre muestras, contra la media, utilizando la transformación logarítmica desplazada, la transformación logarítmica regularizada y la transformación estabilizadora de la varianza. El logaritmo desplazado tiene una desviación estándar elevada en el rango de conteo más bajo y el logaritmo regularizado en menor medida, mientras que para los datos estabilizados por varianza, la desviación estándar es aproximadamente constante a lo largo de todo el rango dinámico.
+
+Tenga en cuenta que el eje vertical en dichos gráficos es la raíz cuadrada de la varianza sobre todas las muestras, por lo que incluye la varianza debida a las condiciones experimentales. Si bien una curva plana de la raíz cuadrada de la varianza sobre la media puede parecer el objetivo de tales transformaciones, esto puede no ser razonable en el caso de conjuntos de datos con muchas diferencias verdaderas debido a las condiciones experimentales.
+
+```{r}
+# this gives log2(n + 1)
+ntd <- normTransform(dds)
+library("vsn")
+meanSdPlot(assay(ntd))
+
+```
+
+```{r}
+meanSdPlot(assay(vsd))
+
+```
+
+```{r}
+meanSdPlot(assay(rld))
+```
+
+## Evaluación de la calidad de los datos mediante agrupación y visualización de muestras
+La evaluación y el control de la calidad de los datos (es decir, la eliminación de datos insuficientemente buenos) son pasos esenciales de cualquier análisis de datos. Por lo general, estos pasos deben realizarse muy temprano en el análisis de un nuevo conjunto de datos, antes o en paralelo a la prueba de expresión diferencial.
+
+Definimos el término calidad como la adecuación al propósito . Nuestro propósito es la detección de genes expresados ​​diferencialmente, y buscamos en particular muestras cuyo tratamiento experimental sufriera una anomalía que hace que los puntos de datos obtenidos de estas muestras particulares sean perjudiciales para nuestro propósito.
+
+## Mapa de calor de la matriz de conteo
+Para explorar una matriz de conteo, a menudo es instructivo mirarla como un mapa de calor. A continuación, mostramos cómo producir un mapa de calor de este tipo para varias transformaciones de los datos.
+
+```{r}
+library("pheatmap")
+select <- order(rowMeans(counts(dds,normalized=TRUE)),
+                decreasing=TRUE)[1:20]
+df <- as.data.frame(colData(dds)[,c("condition","type")])
+pheatmap(assay(ntd)[select,], cluster_rows=FALSE, show_rownames=FALSE,
+         cluster_cols=FALSE, annotation_col=df)
+```
+
+```{r}
+pheatmap(assay(vsd)[select,], cluster_rows=FALSE, show_rownames=FALSE,
+         cluster_cols=FALSE, annotation_col=df)
+
+```
+```{r}
+pheatmap(assay(rld)[select,], cluster_rows=FALSE, show_rownames=FALSE,
+         cluster_cols=FALSE, annotation_col=df)
+```
+
+## Mapa de calor de las distancias de muestra a muestra
+Otro uso de los datos transformados es el agrupamiento de muestras. Aquí, aplicamos la función dist a la transposición de la matriz de conteo transformada para obtener distancias de muestra a muestra.
+
+
+```{r}
+sampleDists <- dist(t(assay(vsd)))
+```
+
+Un mapa de calor de esta matriz de distancia nos brinda una descripción general de las similitudes y diferencias entre las muestras. Tenemos que proporcionar un agrupamiento jerárquico hca la función de mapa de calor en función de las distancias de muestra, o de lo contrario, la función de mapa de calor calcularía un agrupamiento en función de las distancias entre las filas/columnas de la matriz de distancia.
+
+```{r}
+library("RColorBrewer")
+sampleDistMatrix <- as.matrix(sampleDists)
+rownames(sampleDistMatrix) <- paste(vsd$condition, vsd$type, sep="-")
+colnames(sampleDistMatrix) <- NULL
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows=sampleDists,
+         clustering_distance_cols=sampleDists,
+         col=colors)
+
+
+```
+
+## Gráfica de componentes principales de las muestras
+Relacionado con la matriz de distancia está el gráfico PCA, que muestra las muestras en el plano 2D divididas por sus dos primeros componentes principales. Este tipo de gráfico es útil para visualizar el efecto general de las covariables experimentales y los efectos por lotes.
+
+```{r}
+plotPCA(vsd, intgroup=c("condition", "type"))
+```
+
+También es posible personalizar el gráfico PCA utilizando la función ggplot .
+
+```{r}
+pcaData <- plotPCA(vsd, intgroup=c("condition", "type"), returnData=TRUE)
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+ggplot(pcaData, aes(PC1, PC2, color=condition, shape=type)) +
+  geom_point(size=3) +
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+  coord_fixed()
+```
+
+## Variaciones del flujo de trabajo estándar
+### Pasos individuales de la prueba de Wald
+
+La función DESeq ejecuta las siguientes funciones en orden:
+
+```{r}
+dds <- estimateSizeFactors(dds)
+dds <- estimateDispersions(dds)
+dds <- nbinomWaldTest(dds)
+```
+
+##n Funciones de control para estimar factores de tamaño
+En algunos experimentos, puede no ser apropiado suponer que una minoría de características (genes) se ven afectadas en gran medida por la condición, de modo que el método estándar de la razón de la mediana para estimar los factores de tamaño no proporcionará una inferencia correcta (el registro de veces cambia para las características que realmente no cambiaron no estarán centradas en cero). Este es un problema de inferencia difícil para cualquier método, pero hay una característica importante que se puede usar: el controlGenesargumento de estimateSizeFactors. Si hay información previa sobre las características (genes) que no deberían cambiar con respecto a la condición, proporcionar este conjunto de características garantizará controlGenesque los cambios de registro de estas características se centren alrededor de 0. El paradigma entonces se convierte en:
+
+```{r}
+#dds <- estimateSizeFactors(dds, controlGenes=ctrlGenes)
+#dds <- DESeq(dds)
+```
+
+##contrastes
+
+Un contraste es una combinación lineal de cambios de pliegue log2 estimados, que se puede usar para probar si las diferencias entre grupos son iguales a cero. El caso de uso más simple para los contrastes es un diseño experimental que contiene un factor con tres niveles, digamos A, B y C. Los contrastes permiten al usuario generar resultados para las 3 diferencias posibles: cambio log2 de B frente a A, de C frente a A, y de C frente a B. El contrastargumento de la función de resultados se utiliza para extraer los resultados de las pruebas de log2 veces los cambios de interés, por ejemplo:
+
+```{r}
+##results(dds, contrast=c("condition","C","B"))
+```
+
+Los cambios de pliegue log2 también se pueden sumar y restar proporcionando un listal contrastargumento que tiene dos elementos: los nombres de los cambios de pliegue log2 para agregar y los nombres de los cambios de pliegue log2 para restar. Los nombres utilizados en la lista deben provenir de resultsNames(dds). resultsNames(dds)Alternativamente, se puede proporcionar un vector numérico de la longitud de , para especificar manualmente la combinación lineal de términos. Un tutorial que describe el uso de contrastes numéricos para DESeq2 explica un enfoque general para comparar entre grupos de muestras. Se pueden encontrar demostraciones del uso de contrastes para varios diseños en la sección de ejemplos de la página de ayuda ?results. La fórmula matemática que se utiliza para generar los contrastes se puede encontrar a continuación .
+
+# Interacciones
+
+Los términos de interacción se pueden agregar a la fórmula de diseño para probar, por ejemplo, si el cambio log2 veces atribuible a una condición dada es diferente en función de otro factor, por ejemplo, si el efecto de la condición difiere entre genotipos.
+
+Nota inicial: muchos usuarios comienzan a agregar términos de interacción a la fórmula de diseño, cuando en realidad un enfoque mucho más simple daría todas las tablas de resultados que se desean. Explicaremos este enfoque primero, porque es mucho más simple de realizar. Si las comparaciones de interés son, por ejemplo, el efecto de una condición para diferentes conjuntos de muestras, un enfoque más simple que agregar términos de interacción explícitamente a la fórmula de diseño es realizar los siguientes pasos:
+
+combinar los factores de interés en un solo factor con todas las combinaciones de los factores originales
+cambie el diseño para incluir solo este factor, por ejemplo, ~ grupo
+Usar este diseño es similar a agregar un término de interacción, ya que modela múltiples efectos de condición que se pueden extraer fácilmente con los resultados . Supongamos que tenemos dos factores genotype(con valores I, II y III) y condition(con valores A y B), y queremos extraer el efecto de la condición específicamente para cada genotipo. Podríamos utilizar el siguiente enfoque para obtener, por ejemplo, el efecto de condición para el genotipo I:
